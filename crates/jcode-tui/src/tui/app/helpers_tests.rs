@@ -564,3 +564,72 @@ fn backdated_now_never_panics_and_prefers_past_instants() {
     let zero = super::backdated_now(Duration::ZERO);
     assert!(zero <= Instant::now());
 }
+
+/// Regression: pasting an image from the macOS clipboard silently fell back to
+/// `arboard` because the AppleScript never compiled.
+///
+/// `properties` is a plural class name in AppleScript, so an unquoted
+/// `properties:` label in an ObjC-style message send aborts compilation with
+/// error `-2741` before a single statement executes. The label has to be
+/// escaped as `|properties|`, and `representationUsingType:properties:` needs a
+/// real dictionary rather than `missing value`.
+///
+/// This test asserts the generated source shape. The companion test below
+/// actually runs `osascript` so a future rewrite that reintroduces a syntax
+/// error is caught even if the string shape changes.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_clipboard_script_escapes_the_properties_label() {
+    let script = super::macos_clipboard_png_script("/tmp/jcode_clipboard_test.png");
+
+    assert!(
+        script.contains("|properties|:"),
+        "`properties:` must be escaped as `|properties|:` or AppleScript fails to compile:\n{script}"
+    );
+    assert!(
+        !script.contains(" properties:"),
+        "an unescaped `properties:` label reintroduces AppleScript error -2741:\n{script}"
+    );
+    assert!(
+        !script.contains("|properties|:(missing value)"),
+        "representationUsingType:properties: rejects `missing value`; pass a dictionary"
+    );
+    assert!(
+        script.contains("/tmp/jcode_clipboard_test.png"),
+        "the destination path must be interpolated into the script"
+    );
+    assert!(
+        !script.contains("\\\""),
+        "quotes are passed through `osascript -e` verbatim and must not be backslash-escaped:\n{script}"
+    );
+}
+
+/// The script must actually compile under `osascript`. An empty clipboard is a
+/// perfectly good fixture: it exercises the whole parse and the `else` branch
+/// without depending on any image being copied.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_clipboard_script_compiles_and_runs_under_osascript() {
+    let script = super::macos_clipboard_png_script("/tmp/jcode_clipboard_compile_check.png");
+
+    let output = std::process::Command::new("osascript")
+        .args(["-l", "AppleScript", "-e", &script])
+        .output()
+        .expect("osascript should be present on macOS");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("syntax error"),
+        "AppleScript failed to compile: {stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "osascript exited non-zero: {stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert!(
+        stdout == "ok" || stdout == "none",
+        "expected the script to report `ok` or `none`, got {stdout:?} (stderr: {stderr})"
+    );
+}
