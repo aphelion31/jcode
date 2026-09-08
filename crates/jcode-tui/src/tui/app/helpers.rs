@@ -819,6 +819,41 @@ pub(super) fn spawn_in_new_terminal(
 #[path = "helpers_tests.rs"]
 mod helpers_tests;
 
+/// Build the AppleScript that copies a clipboard image out as PNG.
+///
+/// `properties` is a *plural class name* in AppleScript's own grammar, so an
+/// unquoted `properties:` label in an Objective-C style message send fails to
+/// compile with `-2741` ("Expected end of line, etc. but found plural class
+/// name") before the script ever runs. The label must be escaped as
+/// `|properties|`. Passing `missing value` for it is also rejected by
+/// `representationUsingType:properties:`, which requires a real dictionary,
+/// so an empty `NSDictionary` is used instead.
+#[cfg(target_os = "macos")]
+fn macos_clipboard_png_script(temp_path: &str) -> String {
+    format!(
+        r#"use framework "AppKit"
+set pb to current application's NSPasteboard's generalPasteboard()
+set imgClasses to current application's NSArray's arrayWithObject:(current application's NSImage)
+if (pb's canReadObjectForClasses:imgClasses options:(missing value)) then
+    set imgList to pb's readObjectsForClasses:imgClasses options:(missing value)
+    if imgList is missing value or (count of imgList) is 0 then return "none"
+    set img to item 1 of imgList
+    set tiffData to img's TIFFRepresentation()
+    if tiffData is missing value then return "none"
+    set bitmapRep to current application's NSBitmapImageRep's imageRepWithData:tiffData
+    if bitmapRep is missing value then return "none"
+    set pngType to current application's NSBitmapImageFileTypePNG
+    set emptyProps to current application's NSDictionary's dictionary()
+    set pngData to bitmapRep's representationUsingType:pngType |properties|:emptyProps
+    if pngData is missing value then return "none"
+    pngData's writeToFile:"{temp_path}" atomically:true
+    return "ok"
+else
+    return "none"
+end if"#
+    )
+}
+
 /// Try to get an image from the system clipboard.
 ///
 /// Returns `Some((media_type, base64_data))` if an image is available.
@@ -889,23 +924,7 @@ pub(super) fn clipboard_image() -> Option<(String, String)> {
     #[cfg(target_os = "macos")]
     {
         let temp_path = std::env::temp_dir().join("jcode_clipboard.png");
-        let script = format!(
-            r#"use framework \"AppKit\"
-            set pb to current application's NSPasteboard's generalPasteboard()
-            set imgClasses to current application's NSArray's arrayWithObject:(current application's NSImage)
-            if (pb's canReadObjectForClasses:imgClasses options:(missing value)) then
-                set imgList to pb's readObjectsForClasses:imgClasses options:(missing value)
-                set img to item 1 of imgList
-                set tiffData to img's TIFFRepresentation()
-                set bitmapRep to current application's NSBitmapImageRep's imageRepWithData:tiffData
-                set pngData to bitmapRep's representationUsingType:(current application's NSBitmapImageFileTypePNG) properties:(missing value)
-                pngData's writeToFile:\"{}\" atomically:true
-                return \"ok\"
-            else
-                return \"none\"
-            end if"#,
-            temp_path.to_string_lossy()
-        );
+        let script = macos_clipboard_png_script(&temp_path.to_string_lossy());
         if let Ok(output) = std::process::Command::new("osascript")
             .args(["-l", "AppleScript", "-e", &script])
             .output()
