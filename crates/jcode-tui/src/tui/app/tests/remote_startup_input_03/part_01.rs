@@ -286,6 +286,100 @@ fn test_typed_absolute_image_path_promotes_before_slash_routing() {
     assert_eq!(app.pending_images[0].0, "image/png");
 }
 
+// Dragging a file from VS Code types a *shell-escaped* path into the composer.
+// `/tmp/my file.txt` arrives as `/tmp/my\ file.txt`, which is correct shell but
+// is not a path any file tool can open: it resolves the backslash literally.
+// The composer must end up holding the real path.
+
+#[test]
+fn dropped_escaped_file_path_is_normalized_into_a_readable_path() {
+    let mut app = create_test_app();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("my notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+    app.set_input_for_test(file.display().to_string().replace(' ', "\\ "));
+
+    assert!(crate::tui::app::input::promote_dropped_images(&mut app));
+
+    assert_eq!(
+        app.input(),
+        file.display().to_string(),
+        "the composer must hold the real path, not the shell-escaped form"
+    );
+    assert!(
+        std::path::Path::new(app.input()).is_file(),
+        "a dragged path must be directly openable: {}",
+        app.input()
+    );
+    assert!(
+        app.pending_images.is_empty(),
+        "a text file drop must not become an image attachment"
+    );
+}
+
+#[test]
+fn dropped_quoted_and_file_url_paths_are_normalized_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("quoted notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+
+    for dropped in [
+        format!("'{}'", file.display()),
+        format!("\"{}\"", file.display()),
+        url::Url::from_file_path(&file).unwrap().to_string(),
+    ] {
+        let mut app = create_test_app();
+        app.set_input_for_test(dropped.clone());
+
+        assert!(
+            crate::tui::app::input::promote_dropped_images(&mut app),
+            "drop shape must be recognized: {dropped}"
+        );
+        assert!(
+            std::path::Path::new(app.input()).is_file(),
+            "{dropped} must normalize to an openable path, got {}",
+            app.input()
+        );
+    }
+}
+
+#[test]
+fn a_bare_dropped_path_is_left_alone_and_prose_is_never_rewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("plain.txt");
+    std::fs::write(&file, b"notes").unwrap();
+
+    // Already-clean path: nothing to normalize, so no undo entry is burned.
+    let mut app = create_test_app();
+    app.set_input_for_test(file.display().to_string());
+    assert!(!crate::tui::app::input::promote_dropped_images(&mut app));
+    assert_eq!(app.input(), file.display().to_string());
+
+    // Prose that merely mentions a path must survive untouched.
+    let mut app = create_test_app();
+    let prose = format!("please read {} and summarize", file.display());
+    app.set_input_for_test(prose.clone());
+    assert!(!crate::tui::app::input::promote_dropped_images(&mut app));
+    assert_eq!(app.input(), prose);
+}
+
+#[test]
+fn pasted_escaped_file_drop_inserts_a_readable_path() {
+    let mut app = create_test_app();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("pasted notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+
+    // The bracketed-paste route (what most terminals use for a drop).
+    app.handle_paste(file.display().to_string().replace(' ', "\\ "));
+
+    assert!(
+        std::path::Path::new(app.input()).is_file(),
+        "pasted drop must land as an openable path, got {}",
+        app.input()
+    );
+}
+
 #[test]
 fn test_incremental_terminal_drop_promotes_immediately_when_path_completes() {
     let mut app = create_test_app();

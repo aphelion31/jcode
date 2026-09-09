@@ -690,6 +690,11 @@ pub(super) fn handle_paste(app: &mut App, text: String) {
                 );
                 image_count += 1;
             } else {
+                // `path` came back from `parse_dropped_paths`, which already
+                // resolved shell escapes / quotes / `file://` and verified the
+                // file exists. Insert that resolved path, not the raw dropped
+                // text: `/tmp/my\ file.txt` is valid shell but not a path any
+                // file tool can open.
                 insert_input_text(app, &format_dropped_path(&path, item_count > 1));
                 file_count += 1;
             }
@@ -755,6 +760,53 @@ fn dropped_image_files(text: &str) -> Option<Vec<(String, Vec<u8>)>> {
 /// value before command/skill routing so an absolute `/...` path is never treated
 /// as a slash command.
 pub(super) fn promote_dropped_images(app: &mut App) -> bool {
+    if promote_dropped_image_files(app) {
+        return true;
+    }
+    normalize_dropped_file_paths(app)
+}
+
+/// Rewrite a composer that holds only shell-escaped / quoted / `file://` dropped
+/// paths into the plain paths those forms denote.
+///
+/// VS Code (and most terminals) shell-escape a dragged path, so dropping
+/// `/tmp/my file.txt` types `/tmp/my\ file.txt` into the composer. That string is
+/// correct for a shell but is not a real path: every file tool resolves it
+/// literally, looks for a directory component containing a backslash, and fails.
+/// The same applies to `'...'`, `"..."`, and `file://` URLs. Since
+/// [`parse_dropped_paths`] already verified each token resolves to an existing
+/// file, replacing the composer text with those verified paths is lossless and
+/// makes a dragged file immediately readable.
+///
+/// Only fires when the composer is *exactly* the dropped paths, so ordinary
+/// prose that merely contains a path is never rewritten. Returns true when the
+/// composer was changed.
+fn normalize_dropped_file_paths(app: &mut App) -> bool {
+    let Some(paths) = parse_dropped_paths(&app.input) else {
+        return false;
+    };
+    let multiple = paths.len() > 1;
+    let normalized = paths
+        .iter()
+        .map(|path| format_dropped_path(path, multiple))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized == app.input {
+        return false;
+    }
+    app.remember_input_undo_state();
+    app.input = normalized;
+    app.cursor_pos = app.input.len();
+    app.sync_model_picker_preview_from_input();
+    let count = paths.len();
+    app.set_status_notice(format!(
+        "Dropped {count} file{}",
+        if count == 1 { "" } else { "s" }
+    ));
+    true
+}
+
+fn promote_dropped_image_files(app: &mut App) -> bool {
     let Some(images) = dropped_image_files(&app.input) else {
         return false;
     };
