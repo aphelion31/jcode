@@ -103,3 +103,82 @@ fn test_unknown_skill_with_image_placeholder_reports_error_and_keeps_image() {
     );
     assert_eq!(app.pending_images.len(), 1);
 }
+
+// A submitted image must be visible to the user, not just sent to the model.
+// Before this echo the transcript only carried the literal `[image N]` text,
+// so the user had no way to see what they actually attached.
+
+fn user_echoed_images(app: &App) -> Vec<&crate::session::RenderedImage> {
+    app.remote_side_pane_images
+        .iter()
+        .filter(|image| image.source == crate::session::RenderedImageSource::UserInput)
+        .collect()
+}
+
+#[test]
+fn submitted_image_is_echoed_inline_anchored_to_its_own_user_prompt() {
+    let mut app = create_test_app();
+    attach_test_image(&mut app);
+    app.set_input_for_test(format!("{} describe this", app.input()));
+
+    app.submit_input();
+
+    let echoed = user_echoed_images(&app);
+    assert_eq!(
+        echoed.len(),
+        1,
+        "the submitted image must be echoed into the transcript"
+    );
+    assert_eq!(echoed[0].media_type, "image/png");
+    assert_eq!(
+        echoed[0].data, "aGVsbG8=",
+        "the echoed payload must be the bytes that were actually sent"
+    );
+    assert_eq!(
+        echoed[0].anchor,
+        Some(crate::session::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        "the first user prompt anchors at ordinal 0, so the image renders under it"
+    );
+}
+
+#[test]
+fn second_submitted_image_anchors_to_the_second_prompt_not_the_first() {
+    let mut app = create_test_app();
+
+    attach_test_image(&mut app);
+    app.set_input_for_test(format!("{} first", app.input()));
+    app.submit_input();
+
+    // A second prompt must not stack its image under prompt #1; the ordinal
+    // has to advance with the rendered user-prompt count.
+    app.pending_images
+        .push(("image/jpeg".to_string(), "c2Vjb25k".to_string()));
+    app.set_input_for_test("second [image 1]".to_string());
+    app.submit_input();
+
+    let echoed = user_echoed_images(&app);
+    assert_eq!(echoed.len(), 2, "both submitted images must be echoed");
+    assert_eq!(
+        echoed[0].anchor,
+        Some(crate::session::RenderedImageAnchor::UserPrompt { ordinal: 0 })
+    );
+    assert_eq!(
+        echoed[1].anchor,
+        Some(crate::session::RenderedImageAnchor::UserPrompt { ordinal: 1 }),
+        "the second prompt's image must anchor to the second prompt"
+    );
+    assert_eq!(echoed[1].data, "c2Vjb25k");
+}
+
+#[test]
+fn text_only_submission_echoes_no_inline_image() {
+    let mut app = create_test_app();
+    app.set_input_for_test("just text".to_string());
+
+    app.submit_input();
+
+    assert!(
+        user_echoed_images(&app).is_empty(),
+        "a text-only turn must not fabricate an inline image"
+    );
+}

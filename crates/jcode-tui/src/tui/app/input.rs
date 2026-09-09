@@ -3934,6 +3934,9 @@ impl App {
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
+            // Show the user what they actually sent, inline under their own
+            // prompt, instead of only the `[image N]` text placeholder.
+            self.echo_submitted_images_inline(&images);
         }
         if images.is_empty() {
             self.current_turn_system_reminder = mission_turn_reminder(&self.session.id);

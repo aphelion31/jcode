@@ -153,6 +153,11 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
         title: None,
         tool_data: None,
     });
+    // Show the user what they actually sent, inline under their own prompt.
+    // A remote client only rebuilds its inline image set from a full History
+    // payload, so without this echo the attachment stays invisible for the
+    // whole turn even though the model received it.
+    app.echo_submitted_images_inline(&prepared.images);
     let _ = app
         .begin_remote_send(remote, prepared.expanded, prepared.images, false)
         .await;

@@ -189,6 +189,63 @@ impl App {
         self.side_pane_images_signature_cache.set(None);
     }
 
+    /// Echo images the user just submitted so they render inline underneath
+    /// their own prompt, the same way tool/assistant images already do.
+    ///
+    /// Without this the user only ever sees the `[image N]` text placeholder:
+    /// the payload goes to the model, but the local transcript has no
+    /// `RenderedImage` for it. The server-side history renderer does anchor
+    /// user images (`RenderedImageAnchor::UserPrompt`), but a remote client
+    /// only rebuilds `remote_side_pane_images` from a full `History` payload,
+    /// so nothing shows until an unrelated reload. Anchoring the echo locally
+    /// makes the image appear on Enter.
+    ///
+    /// `prompt_ordinal` must be the 0-based index of the user prompt these
+    /// images belong to, counted the way the renderer counts it: user display
+    /// messages excluding synthetic attached-image label messages. Call this
+    /// *after* the user's `DisplayMessage` has been pushed.
+    pub(super) fn echo_submitted_images_inline(&mut self, images: &[(String, String)]) {
+        if images.is_empty() {
+            return;
+        }
+        let ordinal = self.submitted_prompt_anchor_ordinal();
+        let rendered: Vec<crate::session::RenderedImage> = images
+            .iter()
+            .map(|(media_type, data)| crate::session::RenderedImage {
+                media_type: media_type.clone(),
+                data: data.clone(),
+                label: None,
+                source: crate::session::RenderedImageSource::UserInput,
+                anchor: Some(crate::session::RenderedImageAnchor::UserPrompt { ordinal }),
+            })
+            .collect();
+        // A local session also merges `render_images(&self.session)`, which
+        // will yield these same payloads once the turn is persisted. That merge
+        // dedupes on (media_type, data), so echoing here cannot double-render.
+        self.append_live_inline_images(rendered);
+    }
+
+    /// 0-based ordinal of the user prompt that was just pushed, matching the
+    /// renderer's counting rule (user messages, excluding synthetic
+    /// attached-image label messages).
+    ///
+    /// The ordinal is relative to the *rendered* transcript window, not the
+    /// whole session: both `prepare_body_incremental` and the server-side
+    /// renderer start their prompt counter at 0 for the messages they actually
+    /// render. `compacted_hidden_user_prompts()` is deliberately not added
+    /// here; it only offsets the human-visible prompt *number*, not the anchor.
+    fn submitted_prompt_anchor_ordinal(&self) -> usize {
+        let rendered_user_prompts = self
+            .display_messages
+            .iter()
+            .filter(|message| message.effective_role() == "user")
+            .filter(|message| !crate::session::is_attached_image_label_text(&message.content))
+            .count();
+        // The just-pushed prompt is included in the count above, so its own
+        // 0-based ordinal is one less.
+        rendered_user_prompts.saturating_sub(1)
+    }
+
     /// Drop rendered inline images and every cache keyed by their contents.
     /// Use this when the entire transcript is discarded.
     pub(crate) fn clear_inline_image_state(&mut self) {
