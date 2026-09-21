@@ -233,6 +233,7 @@ impl App {
                 label: None,
                 source: crate::session::RenderedImageSource::UserInput,
                 anchor: Some(crate::session::RenderedImageAnchor::UserPrompt { ordinal }),
+                history_message_index: None,
             })
             .collect();
         // A local session also merges `render_images(&self.session)`, which
